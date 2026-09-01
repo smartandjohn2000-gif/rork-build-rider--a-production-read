@@ -1,0 +1,10 @@
+{
+  "apps": [
+    {
+      "name": "RideAX",
+      "path": "ios-rideax",
+      "framework": "swift"
+    }
+  ],
+  "$schema": "https://rork.com/schema/rork.json"
+}
