@@ -10,9 +10,12 @@ nonisolated struct SessionSnapshot: Codable, Sendable {
     var notificationsEnabled: Bool
 }
 
-/// Owns authentication, the active role and account-level preferences.
-/// The auth calls are stubbed against a local identity so the app is fully
-/// usable; swapping in a real provider only touches `signIn`/`signUp`.
+/// Owns the signed-in identity, the active role and account preferences.
+///
+/// Identity comes from Rork Auth (Apple / Google). The resulting JWT is what
+/// Postgres row-level security reads, so the profile row here and the rides and
+/// payments rows elsewhere all hang off the same user id. Preferences stay on
+/// device; anything that must survive a reinstall lives in Postgres.
 @Observable
 @MainActor
 final class SessionStore {
@@ -23,8 +26,13 @@ final class SessionStore {
     private(set) var paymentMethods: [PaymentMethod] = PaymentMethod.defaults
     var notificationsEnabled: Bool = true
 
+    /// True while a stored session is being restored on launch.
+    private(set) var isRestoring: Bool = true
     private(set) var isAuthenticating: Bool = false
     private(set) var authError: String?
+
+    private let backend = BackendService()
+    private let auth = AuthManager.shared
 
     var isSignedIn: Bool { account != nil }
 
@@ -36,75 +44,37 @@ final class SessionStore {
         restore()
     }
 
-    // MARK: - Onboarding
+    // MARK: - Session
 
-    func completeOnboarding(role: AppRole) {
-        self.role = role
-        hasCompletedOnboarding = true
-        persist()
-    }
-
-    func switchRole(to role: AppRole) {
-        guard role != self.role else { return }
-        self.role = role
-        persist()
-    }
-
-    // MARK: - Authentication
-
-    func signIn(email: String, password: String) async {
-        guard isValid(email: email), password.count >= 6 else {
-            authError = "Enter a valid email and a password of at least 6 characters."
-            return
+    /// Restores tokens on launch and re-syncs the profile row.
+    func bootstrap() async {
+        await auth.restore()
+        if let user = auth.user {
+            await adopt(user)
+        } else {
+            // Tokens are gone (expired refresh, reinstall, sign-out elsewhere).
+            account = nil
+            persist()
         }
+        isRestoring = false
+    }
+
+    func signIn(with provider: AuthProvider) async {
         isAuthenticating = true
         authError = nil
-        try? await Task.sleep(for: .milliseconds(700))
-        account = UserAccount(
-            id: UUID().uuidString,
-            fullName: Self.displayName(from: email),
-            email: email,
-            phone: "+33 6 12 34 56 78",
-            role: role,
-            rating: 4.92,
-            memberSince: Date(timeIntervalSinceNow: -60 * 60 * 24 * 214),
-            avatarURL: nil
-        )
-        isAuthenticating = false
-        persist()
-    }
+        defer { isAuthenticating = false }
 
-    func signUp(name: String, email: String, phone: String, password: String) async {
-        guard !name.trimmingCharacters(in: .whitespaces).isEmpty else {
-            authError = "Please enter your name."
+        await auth.signIn(provider: provider)
+
+        guard let user = auth.user else {
+            authError = auth.errorMessage
             return
         }
-        guard isValid(email: email) else {
-            authError = "That email address doesn't look right."
-            return
-        }
-        guard password.count >= 6 else {
-            authError = "Choose a password of at least 6 characters."
-            return
-        }
-        isAuthenticating = true
-        authError = nil
-        try? await Task.sleep(for: .milliseconds(800))
-        account = UserAccount(
-            id: UUID().uuidString,
-            fullName: name,
-            email: email,
-            phone: phone.isEmpty ? "+33 6 12 34 56 78" : phone,
-            role: role,
-            rating: 5.0,
-            memberSince: Date(),
-            avatarURL: nil
-        )
-        isAuthenticating = false
-        persist()
+        await adopt(user)
     }
 
     func signOut() {
+        auth.signOut()
         account = nil
         hasCompletedOnboarding = false
         authError = nil
@@ -113,6 +83,89 @@ final class SessionStore {
 
     func clearAuthError() {
         authError = nil
+        auth.clearError()
+    }
+
+    /// Mirrors the authenticated user into the local account, then reconciles
+    /// it with the `profiles` row. The local copy lands first so the UI never
+    /// waits on the network to show who is signed in.
+    private func adopt(_ user: AuthManager.AuthUser) async {
+        let fallbackName = user.name ?? Self.displayName(from: user.email)
+        var resolved = UserAccount(
+            id: user.id,
+            fullName: account?.id == user.id ? (account?.fullName ?? fallbackName) : fallbackName,
+            email: user.email,
+            phone: account?.id == user.id ? (account?.phone ?? "") : "",
+            role: role,
+            rating: account?.id == user.id ? (account?.rating ?? 5.0) : 5.0,
+            memberSince: account?.id == user.id ? (account?.memberSince ?? Date()) : Date(),
+            avatarURL: user.picture.flatMap { URL(string: $0) }
+        )
+        account = resolved
+        persist()
+
+        guard Backend.isConfigured else { return }
+
+        do {
+            let profile = try await backend.syncProfile(
+                id: user.id,
+                email: user.email,
+                fullName: resolved.fullName,
+                phone: resolved.phone.isEmpty ? nil : resolved.phone,
+                avatarURL: user.picture,
+                role: role
+            )
+
+            if let profile {
+                resolved.fullName = profile.fullName ?? resolved.fullName
+                resolved.phone = profile.phone ?? resolved.phone
+                resolved.rating = profile.rating
+                resolved.memberSince = profile.createdAt ?? resolved.memberSince
+                account = resolved
+                persist()
+            }
+
+            if role == .driver {
+                try await backend.ensureDriverProfile(id: user.id)
+            }
+        } catch {
+            // Never block sign-in on a sync failure — the app works offline and
+            // the profile is re-synced on the next launch.
+            print("RideAX: profile sync failed — \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Onboarding & role
+
+    func completeOnboarding(role: AppRole) {
+        self.role = role
+        hasCompletedOnboarding = true
+        account?.role = role
+        persist()
+        pushRole(role)
+    }
+
+    func switchRole(to role: AppRole) {
+        guard role != self.role else { return }
+        self.role = role
+        account?.role = role
+        persist()
+        pushRole(role)
+    }
+
+    /// Keeps the server-side role in step with the shell the person is using.
+    private func pushRole(_ role: AppRole) {
+        guard Backend.isConfigured, let id = account?.id else { return }
+        Task { [backend] in
+            do {
+                try await backend.updateRole(id: id, role: role)
+                if role == .driver {
+                    try await backend.ensureDriverProfile(id: id)
+                }
+            } catch {
+                print("RideAX: role sync failed — \(error.localizedDescription)")
+            }
+        }
     }
 
     // MARK: - Preferences
@@ -163,18 +216,16 @@ final class SessionStore {
         notificationsEnabled = snapshot.notificationsEnabled
     }
 
-    private func isValid(email: String) -> Bool {
-        let trimmed = email.trimmingCharacters(in: .whitespaces)
-        return trimmed.contains("@") && trimmed.contains(".") && trimmed.count > 5
-    }
-
     private static func displayName(from email: String) -> String {
         let handle = email.split(separator: "@").first.map(String.init) ?? "Rider"
-        return handle
+        let cleaned = handle
             .replacingOccurrences(of: ".", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+        let name = cleaned
             .split(separator: " ")
             .map { $0.capitalized }
             .joined(separator: " ")
+        return name.isEmpty ? "Rider" : name
     }
 }
 
@@ -195,8 +246,9 @@ extension Place {
 }
 
 extension PaymentMethod {
+    /// Placeholder rows shown before the rider has paid once. Real cards are
+    /// held by Stripe and offered inside its sheet — RideAX never stores them.
     static let defaults: [PaymentMethod] = [
-        PaymentMethod(id: "pm_visa", brand: "Visa", last4: "4242", isDefault: true, supportsWallet: true),
-        PaymentMethod(id: "pm_mc", brand: "Mastercard", last4: "8210", isDefault: false, supportsWallet: false)
+        PaymentMethod(id: "pm_stripe", brand: "Card via Stripe", last4: "", isDefault: true, supportsWallet: false)
     ]
 }

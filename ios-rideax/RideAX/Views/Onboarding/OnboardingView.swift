@@ -7,7 +7,6 @@ struct OnboardingView: View {
     @State private var page: Int = 0
     @State private var selectedRole: AppRole = .rider
     @State private var showsAuth: Bool = false
-    @State private var authMode: AuthMode = .signUp
 
     private let pages: [OnboardingPage] = OnboardingPage.all
 
@@ -32,7 +31,7 @@ struct OnboardingView: View {
         }
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showsAuth) {
-            AuthView(mode: authMode, role: selectedRole)
+            AuthView(role: selectedRole)
                 .presentationDetents([.large])
                 .presentationBackground(RideTheme.canvas)
         }
@@ -136,7 +135,6 @@ struct OnboardingView: View {
                 if page < pages.count - 1 {
                     withAnimation { page += 1 }
                 } else {
-                    authMode = .signUp
                     session.switchRole(to: selectedRole)
                     showsAuth = true
                 }
@@ -144,7 +142,7 @@ struct OnboardingView: View {
             .buttonStyle(RidePrimaryButtonStyle())
 
             Button {
-                authMode = .signIn
+                Haptics.tap()
                 session.switchRole(to: selectedRole)
                 showsAuth = true
             } label: {

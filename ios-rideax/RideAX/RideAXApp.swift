@@ -22,6 +22,15 @@ struct RideAXApp: App {
                 .environment(tripStore)
                 .environment(locationService)
                 .tint(RideTheme.accent)
+                .task {
+                    // Restore the signed-in identity before anything queries
+                    // Postgres, so the first request already carries the JWT.
+                    await session.bootstrap()
+                    rideStore.riderID = session.account?.id
+                }
+                .onChange(of: session.account?.id) { _, id in
+                    rideStore.riderID = id
+                }
         }
     }
 }

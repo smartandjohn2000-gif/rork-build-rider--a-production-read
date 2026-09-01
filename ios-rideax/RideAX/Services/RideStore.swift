@@ -131,7 +131,15 @@ final class RideStore {
 
     private let routeService = RouteService()
     private let paymentService = PaymentService()
+    private let backend = BackendService()
     var pricing = PricingService()
+
+    /// The signed-in rider. Set once the session is restored; without it the
+    /// app still works, it just keeps everything on device.
+    var riderID: String?
+    /// Server-side id of the live ride, and the key Stripe charges against.
+    private(set) var remoteRideID: UUID?
+    private(set) var isPaying: Bool = false
 
     private var simulationTask: Task<Void, Never>?
     private var quoteTask: Task<Void, Never>?
@@ -372,8 +380,40 @@ final class RideStore {
         )
         ride = newRide
         etaMinutes = selectedClass.etaMinutes
+        remoteRideID = nil
         Haptics.tap()
+        persistNewRide(newRide, quote: quote)
         startSimulation()
+    }
+
+    // MARK: - Backend sync
+
+    /// Writes the ride to Postgres. The row is what the payment functions read
+    /// to decide the amount, so the fare can never be set by the client at
+    /// checkout time.
+    private func persistNewRide(_ ride: Ride, quote: FareQuote) {
+        guard Backend.isConfigured, let riderID else { return }
+        Task { [backend] in
+            do {
+                let id = try await backend.createRide(riderID: riderID, ride: ride, quote: quote)
+                self.remoteRideID = id
+            } catch {
+                print("RideAX: could not persist ride — \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Fire-and-forget status mirroring. A failed sync never interrupts the
+    /// trip on screen; the local state machine stays authoritative for the UI.
+    private func publish(_ update: RideUpdate) {
+        guard Backend.isConfigured, let remoteRideID else { return }
+        Task { [backend] in
+            do {
+                try await backend.updateRide(id: remoteRideID, update)
+            } catch {
+                print("RideAX: ride sync failed — \(error.localizedDescription)")
+            }
+        }
     }
 
     func cancelRide(reason: String = "Changed my mind") {
@@ -384,12 +424,14 @@ final class RideStore {
         ride = current
         driverPing = nil
         driverRoute = []
+        publish(RideUpdate(status: RideStatus.cancelled.rawValue, cancelledAt: Date()))
         Haptics.warning()
     }
 
     func dismissCompletedRide() {
         simulationTask?.cancel()
         ride = nil
+        remoteRideID = nil
         receipt = nil
         progress = 0
         driverPing = nil
@@ -449,6 +491,15 @@ final class RideStore {
         ride = refreshed
         progress = 0
         etaMinutes = pickupRoute.minutes
+        publish(
+            RideUpdate(
+                status: RideStatus.accepted.rawValue,
+                driverName: driver.name,
+                driverPlate: driver.plate,
+                driverVehicle: driver.vehicle,
+                acceptedAt: Date()
+            )
+        )
         beginLeg(route: pickupRoute.polyline)
         Haptics.success()
         current = refreshed
@@ -482,6 +533,17 @@ final class RideStore {
         current.status = status
         if status == .completed { current.completedAt = Date() }
         ride = current
+
+        switch status {
+        case .started:
+            publish(RideUpdate(status: status.rawValue, startedAt: Date()))
+        case .completed:
+            publish(RideUpdate(status: status.rawValue, completedAt: Date()))
+        case .paid:
+            break // Only Stripe's webhook may mark a ride paid server-side.
+        default:
+            publish(RideUpdate(status: status.rawValue))
+        }
     }
 
     /// Publishes the driver's starting position for a new leg and resets the
@@ -555,31 +617,104 @@ final class RideStore {
 
     // MARK: - Payment
 
+    /// Charges the completed trip through Stripe.
+    ///
+    /// The amount is never sent from here: the backend prices the PaymentIntent
+    /// from the ride row, Stripe's sheet collects the card, and Stripe's webhook
+    /// is what marks the ride paid. We then read back the settled payment row
+    /// for the receipt, so what the rider sees matches what was actually taken.
     func payForRide(method: PaymentMethod?, tripStore: TripStore) async {
-        guard let current = ride, current.status == .completed else { return }
+        guard let current = ride, current.status == .completed, !isPaying else { return }
+        isPaying = true
+        defer { isPaying = false }
+
+        guard Backend.isConfigured, let remoteRideID else {
+            await settleWithoutStripe(current, method: method, tripStore: tripStore)
+            return
+        }
+
         do {
-            let receipt = try await paymentService.charge(ride: current, method: method)
-            self.receipt = receipt
-            try updateStatus(.paid)
-            tripStore.recordRiderTrip(
-                TripRecord(
-                    id: current.id,
-                    pickupName: current.pickup.name,
-                    dropoffName: current.dropoff.name,
-                    date: Date(),
-                    fare: current.quote.total,
-                    currencyCode: current.quote.currencyCode,
-                    className: current.rideClass.name,
-                    counterpartName: current.driver?.name ?? "RideAX driver",
-                    rating: nil,
-                    wasCancelled: false
+            switch try await StripeService.shared.payForRide(remoteRideID: remoteRideID) {
+            case .cancelled:
+                return
+            case .failed(let message):
+                errorMessage = message
+                return
+            case .paid:
+                let settled = await backend.awaitSettledPayment(rideID: remoteRideID)
+                finish(
+                    current,
+                    tripStore: tripStore,
+                    receipt: Receipt(
+                        id: settled?.id.uuidString ?? "rcpt_" + UUID().uuidString.prefix(8),
+                        rideID: current.id,
+                        total: settled?.amount ?? current.quote.total,
+                        currencyCode: (settled?.currency ?? current.quote.currencyCode).uppercased(),
+                        paymentMethodLabel: settled?.paymentMethodLabel ?? method?.displayName ?? "Card",
+                        paidAt: settled?.createdAt ?? Date(),
+                        breakdown: current.quote,
+                        receiptURL: settled?.receiptUrl.flatMap { URL(string: $0) },
+                        isLiveCharge: true
+                    )
+                )
+            }
+        } catch StripeError.alreadyPaid {
+            // The webhook beat us to it — treat the trip as settled.
+            let settled = try? await backend.fetchPayment(rideID: remoteRideID)
+            finish(
+                current,
+                tripStore: tripStore,
+                receipt: Receipt(
+                    id: settled?.id.uuidString ?? current.id,
+                    rideID: current.id,
+                    total: settled?.amount ?? current.quote.total,
+                    currencyCode: (settled?.currency ?? current.quote.currencyCode).uppercased(),
+                    paymentMethodLabel: settled?.paymentMethodLabel ?? "Card",
+                    paidAt: settled?.createdAt ?? Date(),
+                    breakdown: current.quote,
+                    receiptURL: settled?.receiptUrl.flatMap { URL(string: $0) },
+                    isLiveCharge: true
                 )
             )
-            Haptics.success()
+        } catch StripeError.notConfigured {
+            await settleWithoutStripe(current, method: method, tripStore: tripStore)
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "Payment failed. Please try again."
+            Haptics.warning()
+        }
+    }
+
+    /// Closes out the trip when card payments aren't switched on for this
+    /// account. The receipt is flagged so the rider is never told a charge
+    /// happened when it didn't.
+    private func settleWithoutStripe(_ ride: Ride, method: PaymentMethod?, tripStore: TripStore) async {
+        do {
+            let receipt = try await paymentService.settleLocally(ride: ride, method: method)
+            finish(ride, tripStore: tripStore, receipt: receipt)
         } catch {
             errorMessage = (error as? PaymentError)?.errorDescription ?? "Payment failed. Please try again."
             Haptics.warning()
         }
+    }
+
+    private func finish(_ ride: Ride, tripStore: TripStore, receipt: Receipt) {
+        self.receipt = receipt
+        try? updateStatus(.paid)
+        tripStore.recordRiderTrip(
+            TripRecord(
+                id: ride.id,
+                pickupName: ride.pickup.name,
+                dropoffName: ride.dropoff.name,
+                date: Date(),
+                fare: receipt.total,
+                currencyCode: receipt.currencyCode,
+                className: ride.rideClass.name,
+                counterpartName: ride.driver?.name ?? "RideAX driver",
+                rating: nil,
+                wasCancelled: false
+            )
+        )
+        Haptics.success()
     }
 
     func clearError() {

@@ -387,21 +387,32 @@ struct RideTrackingView: View {
                     }
 
                     if ride.status == .completed {
-                        Button {
-                            Task {
-                                isPaying = true
-                                await rideStore.payForRide(method: session.defaultPaymentMethod, tripStore: tripStore)
-                                isPaying = false
+                        VStack(spacing: 8) {
+                            Button {
+                                Task {
+                                    isPaying = true
+                                    await rideStore.payForRide(method: session.defaultPaymentMethod, tripStore: tripStore)
+                                    isPaying = false
+                                }
+                            } label: {
+                                if isPaying {
+                                    ProgressView().tint(Color(hex: 0x14203A))
+                                } else {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "lock.fill")
+                                            .font(.system(size: 13, weight: .bold))
+                                        Text("Pay \(ride.quote.formattedTotal)")
+                                    }
+                                }
                             }
-                        } label: {
-                            if isPaying {
-                                ProgressView().tint(Color(hex: 0x14203A))
-                            } else {
-                                Text("Pay \(ride.quote.formattedTotal)")
-                            }
+                            .buttonStyle(RidePrimaryButtonStyle())
+                            .disabled(isPaying)
+
+                            Text("Card details are handled by Stripe. RideAX never stores them.")
+                                .font(.caption2)
+                                .foregroundStyle(RideTheme.textSecondary.opacity(0.9))
+                                .multilineTextAlignment(.center)
                         }
-                        .buttonStyle(RidePrimaryButtonStyle())
-                        .disabled(isPaying)
                     }
 
                     if ride.status == .paid {
@@ -442,10 +453,26 @@ struct RideTrackingView: View {
             }
 
             if let receipt = rideStore.receipt {
-                Text("Paid with \(receipt.paymentMethodLabel) · receipt \(receipt.id)")
-                    .font(.caption2)
-                    .foregroundStyle(RideTheme.textSecondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(
+                        receipt.isLiveCharge
+                            ? "Charged to \(receipt.paymentMethodLabel)"
+                            : "Recorded · card payment not enabled yet",
+                        systemImage: receipt.isLiveCharge ? "checkmark.seal.fill" : "clock.badge.exclamationmark"
+                    )
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(receipt.isLiveCharge ? RideTheme.success : RideTheme.textSecondary)
+
+                    if let url = receipt.receiptURL {
+                        Link(destination: url) {
+                            Text("View Stripe receipt")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(RideTheme.accent)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 2)
             }
         }
         .padding(12)

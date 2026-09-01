@@ -1,0 +1,29 @@
+import Foundation
+import Supabase
+
+/// The managed Postgres backend.
+///
+/// Every request carries the signed-in rider's Rork JWT, which Postgres reads
+/// in its row-level security policies — a rider can only ever select their own
+/// rides and payments, and payment rows are writable exclusively by the Stripe
+/// edge functions running under the service role.
+nonisolated enum Backend {
+    static let client = SupabaseClient(
+        supabaseURL: URL(string: Config.EXPO_PUBLIC_SUPABASE_URL) ?? URL(string: "https://unconfigured.supabase.co")!,
+        supabaseKey: Config.EXPO_PUBLIC_SUPABASE_ANON_KEY,
+        options: .init(
+            auth: .init(
+                accessToken: {
+                    // nil when signed out: the SDK then runs as `anon`.
+                    AuthManager.currentAccessToken()
+                }
+            )
+        )
+    )
+
+    /// False in previews or before the backend env vars are injected, so the
+    /// app can degrade to local-only behaviour instead of throwing on launch.
+    static var isConfigured: Bool {
+        !Config.EXPO_PUBLIC_SUPABASE_URL.isEmpty && !Config.EXPO_PUBLIC_SUPABASE_ANON_KEY.isEmpty
+    }
+}

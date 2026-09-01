@@ -269,7 +269,8 @@ nonisolated struct PaymentMethod: Identifiable, Codable, Hashable, Sendable {
     var supportsWallet: Bool
 
     var displayName: String {
-        supportsWallet ? "\(brand) •• \(last4) · Apple Pay" : "\(brand) •• \(last4)"
+        guard !last4.isEmpty else { return brand }
+        return supportsWallet ? "\(brand) •• \(last4) · Apple Pay" : "\(brand) •• \(last4)"
     }
 }
 
