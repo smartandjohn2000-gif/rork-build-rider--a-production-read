@@ -12,10 +12,11 @@ nonisolated struct SessionSnapshot: Codable, Sendable {
 
 /// Owns the signed-in identity, the active role and account preferences.
 ///
-/// Identity comes from Rork Auth (Apple / Google). The resulting JWT is what
-/// Postgres row-level security reads, so the profile row here and the rides and
-/// payments rows elsewhere all hang off the same user id. Preferences stay on
-/// device; anything that must survive a reinstall lives in Postgres.
+/// Identity comes from native Supabase Auth — email and password, or Apple /
+/// Google. The resulting JWT is what Postgres row-level security reads, so the
+/// profile row here and the rides and payments rows elsewhere all hang off the
+/// same user id. Preferences stay on device; anything that must survive a
+/// reinstall lives in Postgres.
 @Observable
 @MainActor
 final class SessionStore {
@@ -71,6 +72,30 @@ final class SessionStore {
             return
         }
         await adopt(user)
+    }
+
+    /// Email & password sign-in, or account creation when `isSignUp` is set.
+    func authenticate(email: String, password: String, fullName: String?, isSignUp: Bool) async {
+        isAuthenticating = true
+        authError = nil
+        defer { isAuthenticating = false }
+
+        await auth.authenticate(email: email, password: password, fullName: fullName, isSignUp: isSignUp)
+
+        guard let user = auth.user else {
+            authError = auth.errorMessage
+            return
+        }
+        await adopt(user)
+    }
+
+    /// Deletes the account and its data server-side, then signs out.
+    /// Throws so the caller can show a failure instead of a false success.
+    func deleteAccount() async throws {
+        try await auth.deleteAccount()
+        account = nil
+        hasCompletedOnboarding = false
+        persist()
     }
 
     func signOut() {

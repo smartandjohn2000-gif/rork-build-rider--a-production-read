@@ -6,6 +6,9 @@ struct AccountView: View {
     @Environment(TripStore.self) private var tripStore
 
     @State private var showsSignOutDialog: Bool = false
+    @State private var showsDeleteDialog: Bool = false
+    @State private var isDeletingAccount: Bool = false
+    @State private var deleteError: String?
 
     var body: some View {
         @Bindable var session = session
@@ -93,6 +96,19 @@ struct AccountView: View {
                     }
                     .buttonStyle(RideSecondaryButtonStyle(tint: RideTheme.danger))
                     .padding(.top, 4)
+
+                    Button {
+                        showsDeleteDialog = true
+                    } label: {
+                        if isDeletingAccount {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            Text("Delete account")
+                        }
+                    }
+                    .buttonStyle(RideSecondaryButtonStyle(tint: RideTheme.textSecondary))
+                    .disabled(isDeletingAccount)
                 }
                 .padding(.horizontal, RideTheme.margin)
                 .padding(.bottom, 28)
@@ -103,6 +119,30 @@ struct AccountView: View {
             .confirmationDialog("Sign out of RideAX?", isPresented: $showsSignOutDialog, titleVisibility: .visible) {
                 Button("Sign out", role: .destructive) { session.signOut() }
                 Button("Stay signed in", role: .cancel) {}
+            }
+            .confirmationDialog(
+                "Delete your account? This permanently removes your rides, receipts and driver profile. This cannot be undone.",
+                isPresented: $showsDeleteDialog,
+                titleVisibility: .visible
+            ) {
+                Button("Delete account", role: .destructive) {
+                    isDeletingAccount = true
+                    deleteError = nil
+                    Task {
+                        defer { isDeletingAccount = false }
+                        do {
+                            try await session.deleteAccount()
+                        } catch {
+                            deleteError = "Account deletion failed. Please try again."
+                        }
+                    }
+                }
+                Button("Keep my account", role: .cancel) {}
+            }
+            .alert("Account deletion failed", isPresented: .init(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(deleteError ?? "")
             }
         }
         .preferredColorScheme(.dark)

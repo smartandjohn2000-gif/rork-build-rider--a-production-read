@@ -52,9 +52,10 @@ data class SessionUiState(
 /**
  * Owns the signed-in identity, the active role and account preferences.
  *
- * Identity comes from Rork Auth (Apple / Google); the resulting JWT is what
- * Postgres row-level security reads, so the profile here and the rides and
- * payments elsewhere hang off the same user id as on iOS.
+ * Identity comes from Supabase Auth (email + password, with Apple / Google as
+ * additional options); the resulting JWT is what Postgres row-level security
+ * reads, so the profile here and the rides and payments elsewhere hang off the
+ * same user id as on iOS.
  */
 class SessionViewModel(private val container: AppContainer) : ViewModel() {
     private val auth = container.auth
@@ -119,6 +120,62 @@ class SessionViewModel(private val container: AppContainer) : ViewModel() {
                 _state.update { it.copy(authError = "We couldn't reach the sign-in service. Check your connection and try again.") }
             } finally {
                 _state.update { it.copy(isAuthenticating = false, activeProvider = null) }
+            }
+        }
+    }
+
+    /**
+     * Signs up or signs in with email + password. On success the role picked
+     * during onboarding is kept, so the person lands in the right shell.
+     */
+    fun authenticate(
+        email: String,
+        password: String,
+        fullName: String?,
+        isSignUp: Boolean,
+        role: AppRole,
+    ) {
+        if (_state.value.isAuthenticating) return
+        _state.update { it.copy(isAuthenticating = true, activeProvider = null, authError = null, role = role) }
+        viewModelScope.launch {
+            try {
+                auth.authenticate(email.trim(), password, fullName?.trim()?.ifBlank { null }, isSignUp)
+                val user = auth.user.value
+                if (user != null) {
+                    adopt(user)
+                    completeOnboarding(role)
+                    Haptics.success()
+                }
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (error: AuthFlowError) {
+                _state.update { it.copy(authError = error.message) }
+            } catch (error: Exception) {
+                Log.w(TAG, "Sign-in failed: ${error.javaClass.simpleName}")
+                _state.update { it.copy(authError = "We couldn't reach the sign-in service. Check your connection and try again.") }
+            } finally {
+                _state.update { it.copy(isAuthenticating = false, activeProvider = null) }
+            }
+        }
+    }
+
+    /**
+     * Deletes the account server-side (profile, rides, payments and the auth
+     * user) and returns to onboarding with a clean slate.
+     */
+    fun deleteAccount() {
+        viewModelScope.launch {
+            try {
+                auth.deleteAccount()
+                _state.update { it.copy(account = null, hasCompletedOnboarding = false, authError = null) }
+                persist()
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (error: AuthFlowError) {
+                _state.update { it.copy(authError = error.message) }
+            } catch (error: Exception) {
+                Log.w(TAG, "Account deletion failed: ${error.javaClass.simpleName}")
+                _state.update { it.copy(authError = "We couldn't delete your account right now. Please try again.") }
             }
         }
     }

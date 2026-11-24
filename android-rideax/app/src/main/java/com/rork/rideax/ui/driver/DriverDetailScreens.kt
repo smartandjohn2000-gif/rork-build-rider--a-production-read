@@ -55,6 +55,8 @@ import com.rork.rideax.ui.components.PrimaryButton
 import com.rork.rideax.ui.components.SectionHeader
 import com.rork.rideax.ui.components.pressable
 import com.rork.rideax.ui.components.rideCard
+import com.rork.rideax.ui.rider.DeleteAccountDialog
+import com.rork.rideax.ui.rider.DeleteAccountRow
 import com.rork.rideax.ui.rider.SignOutDialog
 import com.rork.rideax.ui.rider.SignOutRow
 import com.rork.rideax.ui.theme.RideColors
@@ -271,9 +273,13 @@ fun DriverAccountScreen(
     onOpenEarnings: () -> Unit,
     onSwitchToRider: () -> Unit,
     onSignOut: () -> Unit,
+    onDeleteAccount: () -> Unit,
+    deleteError: String?,
+    onClearError: () -> Unit,
     onBack: () -> Unit,
 ) {
     var confirmSignOut by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
     DetailScaffold("Driver account", onBack) {
         Row(Modifier.fillMaxWidth().rideCard().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             Avatar(account?.avatarUrl, account?.initials ?: "D", size = 60.dp)
@@ -301,8 +307,19 @@ fun DriverAccountScreen(
             Icon(Icons.Rounded.KeyboardArrowRight, null, tint = RideColors.TextSecondary)
         }
         SignOutRow { confirmSignOut = true }
+        DeleteAccountRow { confirmDelete = true }
     }
     if (confirmSignOut) SignOutDialog(onConfirm = { confirmSignOut = false; onSignOut() }, onDismiss = { confirmSignOut = false })
+    if (confirmDelete) DeleteAccountDialog(onConfirm = { confirmDelete = false; onDeleteAccount() }, onDismiss = { confirmDelete = false })
+    if (deleteError != null) {
+        AlertDialog(
+            onDismissRequest = onClearError,
+            containerColor = RideColors.Surface,
+            title = { Text("Couldn't delete account", color = RideColors.TextPrimary) },
+            text = { Text(deleteError, color = RideColors.TextSecondary) },
+            confirmButton = { TextButton(onClick = onClearError) { Text("OK", color = RideColors.Accent) } },
+        )
+    }
 }
 
 @Composable

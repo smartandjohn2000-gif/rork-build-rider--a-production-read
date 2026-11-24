@@ -8,6 +8,8 @@ struct DriverAccountView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var showsSignOutDialog: Bool = false
+    @State private var showsDeleteDialog: Bool = false
+    @State private var deleteError: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -84,6 +86,11 @@ struct DriverAccountView: View {
                         showsSignOutDialog = true
                     }
                     .buttonStyle(RideSecondaryButtonStyle(tint: RideTheme.danger))
+
+                    Button("Delete account") {
+                        showsDeleteDialog = true
+                    }
+                    .buttonStyle(RideSecondaryButtonStyle(tint: RideTheme.textSecondary))
                 }
                 .padding(.horizontal, RideTheme.margin)
                 .padding(.bottom, 28)
@@ -104,6 +111,28 @@ struct DriverAccountView: View {
                     session.signOut()
                 }
                 Button("Stay signed in", role: .cancel) {}
+            }
+            .confirmationDialog(
+                "Delete your account? This permanently removes your rides, receipts and driver profile. This cannot be undone.",
+                isPresented: $showsDeleteDialog,
+                titleVisibility: .visible
+            ) {
+                Button("Delete account", role: .destructive) {
+                    driverStore.setOnline(false)
+                    Task {
+                        do {
+                            try await session.deleteAccount()
+                        } catch {
+                            deleteError = true
+                        }
+                    }
+                }
+                Button("Keep my account", role: .cancel) {}
+            }
+            .alert("Account deletion failed", isPresented: $deleteError) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Please try again in a moment.")
             }
         }
         .preferredColorScheme(.dark)

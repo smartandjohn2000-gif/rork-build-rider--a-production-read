@@ -1,7 +1,4 @@
-import { jwtVerify, createRemoteJWKSet } from "https://deno.land/x/jose@v5.2.0/index.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const JWKS = createRemoteJWKSet(new URL("https://api.rork.com/.well-known/jwks.json"));
 
 export class AuthError extends Error {
   constructor(message: string) {
@@ -16,20 +13,25 @@ export interface AuthUser {
   name?: string;
 }
 
+/**
+ * Verifies the caller's native Supabase Auth token and returns their user.
+ * The anon key + Authorization pair acts as that user for PostgREST too.
+ */
 export async function requireAuth(req: Request): Promise<AuthUser> {
-  try {
-    const token = req.headers.get("Authorization")?.replace("Bearer ", "");
-    if (!token) throw new Error("Missing token");
+  const authHeader = req.headers.get("Authorization") ?? "";
+  if (!authHeader.toLowerCase().startsWith("bearer ")) throw new AuthError("Missing token");
 
-    const { payload } = await jwtVerify(token, JWKS, { issuer: "https://api.rork.com" });
-    return {
-      userId: payload.sub!,
-      email: payload.email as string | undefined,
-      name: payload.name as string | undefined,
-    };
-  } catch (err) {
-    throw new AuthError(err instanceof Error ? err.message : "Authentication failed");
-  }
+  const supabase = createUserClient(req);
+  const { data, error } = await supabase.auth.getUser(authHeader.slice(7).trim());
+  if (error || !data.user) throw new AuthError(error?.message ?? "Authentication failed");
+
+  return {
+    userId: data.user.id,
+    email: data.user.email ?? undefined,
+    name:
+      (data.user.user_metadata?.full_name as string | undefined) ??
+      (data.user.user_metadata?.name as string | undefined),
+  };
 }
 
 export function createUserClient(req: Request) {

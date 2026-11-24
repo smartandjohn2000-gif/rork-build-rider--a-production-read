@@ -8,6 +8,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.content.TextContent
 import io.ktor.http.isSuccess
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -33,6 +34,9 @@ object Http {
 
     fun <T> jsonBody(serializer: KSerializer<T>, value: T): TextContent =
         TextContent(json.encodeToString(serializer, value), ContentType.Application.Json)
+
+    inline fun <reified T> jsonBody(value: T): TextContent =
+        TextContent(json.encodeToString(value), ContentType.Application.Json)
 }
 
 /** A non-2xx response, carrying the body so callers can map error codes. */

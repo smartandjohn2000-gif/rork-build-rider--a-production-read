@@ -9,6 +9,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.CreditCard
+import androidx.compose.material.icons.rounded.DeleteForever
 import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.Notifications
@@ -45,9 +46,13 @@ fun AccountScreen(
     onNotifications: (Boolean) -> Unit,
     onSwitchToDriver: () -> Unit,
     onSignOut: () -> Unit,
+    onDeleteAccount: () -> Unit,
+    deleteError: String?,
+    onClearError: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var confirmSignOut by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
     val account = state.account
 
     Column(
@@ -146,9 +151,20 @@ fun AccountScreen(
         }
 
         SignOutRow { confirmSignOut = true }
+        DeleteAccountRow { confirmDelete = true }
     }
 
     if (confirmSignOut) SignOutDialog(onConfirm = { confirmSignOut = false; onSignOut() }, onDismiss = { confirmSignOut = false })
+    if (confirmDelete) DeleteAccountDialog(onConfirm = { confirmDelete = false; onDeleteAccount() }, onDismiss = { confirmDelete = false })
+    if (deleteError != null) {
+        AlertDialog(
+            onDismissRequest = onClearError,
+            containerColor = RideColors.Surface,
+            title = { Text("Couldn't delete account", color = RideColors.TextPrimary) },
+            text = { Text(deleteError, color = RideColors.TextSecondary) },
+            confirmButton = { TextButton(onClick = onClearError) { Text("OK", color = RideColors.Accent) } },
+        )
+    }
 }
 
 @Composable
@@ -180,5 +196,41 @@ fun SignOutDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
         text = { Text("Your trips and receipts stay safe in your account.", color = RideColors.TextSecondary) },
         confirmButton = { TextButton(onClick = onConfirm) { Text("Sign out", color = RideColors.Danger) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = RideColors.TextPrimary) } },
+    )
+}
+
+@Composable
+fun DeleteAccountRow(onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(54.dp)
+            .clip(RoundedCornerShape(RideDimens.ControlRadius))
+            .background(RideColors.Surface)
+            .border(1.dp, RideColors.Danger.copy(alpha = 0.35f), RoundedCornerShape(RideDimens.ControlRadius))
+            .pressable(onClick),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Icon(Icons.Rounded.DeleteForever, null, tint = RideColors.Danger, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("Delete account", style = MaterialTheme.typography.titleMedium, color = RideColors.Danger)
+    }
+}
+
+@Composable
+fun DeleteAccountDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = RideColors.Surface,
+        title = { Text("Delete your account?", color = RideColors.TextPrimary) },
+        text = {
+            Text(
+                "This permanently erases your profile, rides and payment records. This cannot be undone.",
+                color = RideColors.TextSecondary,
+            )
+        },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("Delete forever", color = RideColors.Danger) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Keep my account", color = RideColors.TextPrimary) } },
     )
 }

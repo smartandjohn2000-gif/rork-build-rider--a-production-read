@@ -89,6 +89,9 @@ fun RideAXApp(container: AppContainer) {
                 RootScreen.SPLASH -> SplashScreen()
                 RootScreen.ONBOARDING -> OnboardingScreen(
                     state = state,
+                    onAuthenticate = { email, password, fullName, isSignUp, role ->
+                        session.authenticate(email, password, fullName, isSignUp, role)
+                    },
                     onSignIn = { provider, role -> session.signIn(provider, role, context) },
                     onClearError = session::clearAuthError,
                 )
@@ -181,6 +184,9 @@ private fun RiderShell(container: AppContainer, session: SessionViewModel, ride:
                         onNotifications = session::setNotifications,
                         onSwitchToDriver = { session.switchRole(AppRole.DRIVER) },
                         onSignOut = session::signOut,
+                        onDeleteAccount = session::deleteAccount,
+                        deleteError = sessionState.authError,
+                        onClearError = session::clearAuthError,
                     )
                 }
             }
@@ -245,6 +251,12 @@ private fun DriverShell(container: AppContainer, session: SessionViewModel, driv
                     driver.setOnline(false)
                     session.signOut()
                 },
+                onDeleteAccount = {
+                    driver.setOnline(false)
+                    session.deleteAccount()
+                },
+                deleteError = sessionState.authError,
+                onClearError = session::clearAuthError,
                 onBack = { navController.popBackStack() },
             )
         }

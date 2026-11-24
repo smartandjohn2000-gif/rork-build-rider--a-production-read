@@ -7,6 +7,7 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
@@ -34,6 +35,10 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -82,6 +87,7 @@ private val Pages = listOf(
 @Composable
 fun OnboardingScreen(
     state: SessionUiState,
+    onAuthenticate: (email: String, password: String, fullName: String?, isSignUp: Boolean, role: AppRole) -> Unit,
     onSignIn: (AuthProvider, AppRole) -> Unit,
     onClearError: () -> Unit,
 ) {
@@ -185,6 +191,7 @@ fun OnboardingScreen(
         AuthSheet(
             role = role,
             state = state,
+            onAuthenticate = { email, password, fullName, isSignUp -> onAuthenticate(email, password, fullName, isSignUp, role) },
             onSignIn = { provider -> onSignIn(provider, role) },
             onDismiss = {
                 showsAuth = false
@@ -253,14 +260,29 @@ private fun RoleCard(role: AppRole, isSelected: Boolean, modifier: Modifier = Mo
 }
 
 /**
- * Sign-in sheet. Identity is handled by Apple or Google — RideAX never sees a
- * password — and the onboarding role is carried through to the right shell.
+ * Sign-in sheet. Email + password first, with Apple / Google as additional
+ * options; the onboarding role is carried through to the right shell.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AuthSheet(role: AppRole, state: SessionUiState, onSignIn: (AuthProvider) -> Unit, onDismiss: () -> Unit) {
+private fun AuthSheet(
+    role: AppRole,
+    state: SessionUiState,
+    onAuthenticate: (email: String, password: String, fullName: String?, isSignUp: Boolean) -> Unit,
+    onSignIn: (AuthProvider) -> Unit,
+    onDismiss: () -> Unit,
+) {
     val busy by rememberUpdatedState(state.isAuthenticating)
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true, confirmValueChange = { !busy })
+    var isSignUp by rememberSaveable { mutableStateOf(false) }
+    var email by rememberSaveable { mutableStateOf("") }
+    var password by rememberSaveable { mutableStateOf("") }
+    var fullName by rememberSaveable { mutableStateOf("") }
+    var showsPassword by rememberSaveable { mutableStateOf(false) }
+
+    val emailReady = android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()
+    val formReady = emailReady && password.length >= 8 && (!isSignUp || fullName.isNotBlank())
+    val submitting = state.isAuthenticating && state.activeProvider == null
 
     ModalBottomSheet(
         onDismissRequest = { if (!busy) onDismiss() },
@@ -292,6 +314,85 @@ private fun AuthSheet(role: AppRole, state: SessionUiState, onSignIn: (AuthProvi
             )
             Spacer(Modifier.height(28.dp))
 
+            Spacer(Modifier.height(24.dp))
+
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(RideColors.CanvasDeep.copy(alpha = 0.5f)).padding(4.dp),
+            ) {
+                AuthModeButton("Sign in", !isSignUp, Modifier.weight(1f)) {
+                    isSignUp = false
+                    Haptics.tap()
+                }
+                AuthModeButton("Create account", isSignUp, Modifier.weight(1f)) {
+                    isSignUp = true
+                    Haptics.tap()
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+
+            if (isSignUp) {
+                AuthField(
+                    value = fullName,
+                    onValueChange = { fullName = it },
+                    label = "Full name",
+                    icon = Icons.Rounded.Person,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                )
+                Spacer(Modifier.height(12.dp))
+            }
+            AuthField(
+                value = email,
+                onValueChange = { email = it },
+                label = "Email address",
+                icon = Icons.Rounded.Mail,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
+            )
+            Spacer(Modifier.height(12.dp))
+            AuthField(
+                value = password,
+                onValueChange = { password = it },
+                label = if (isSignUp) "Password (8+ characters)" else "Password",
+                icon = Icons.Rounded.Lock,
+                isPassword = true,
+                showsPassword = showsPassword,
+                onToggleVisibility = { showsPassword = !showsPassword },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+            )
+            Spacer(Modifier.height(16.dp))
+
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(RideDimens.ButtonHeight)
+                    .clip(RoundedCornerShape(27.dp))
+                    .background(if (formReady && !state.isAuthenticating) RideColors.Accent else RideColors.Accent.copy(alpha = 0.45f))
+                    .clickable(enabled = formReady && !state.isAuthenticating, role = Role.Button) {
+                        Haptics.tap()
+                        onAuthenticate(email.trim(), password, fullName.ifBlank { null }, isSignUp)
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                if (submitting) {
+                    CircularProgressIndicator(Modifier.size(22.dp), color = RideColors.OnAccent, strokeWidth = 2.5.dp)
+                } else {
+                    Text(
+                        if (isSignUp) "Create account" else "Sign in",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = RideColors.OnAccent,
+                    )
+                }
+            }
+
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 18.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(Modifier.weight(1f).height(1.dp).background(RideColors.Hairline))
+                Text("or continue with", style = MaterialTheme.typography.labelSmall, color = RideColors.TextSecondary)
+                Box(Modifier.weight(1f).height(1.dp).background(RideColors.Hairline))
+            }
+
             AuthProvider.entries.forEach { provider ->
                 ProviderButton(
                     provider = provider,
@@ -317,7 +418,7 @@ private fun AuthSheet(role: AppRole, state: SessionUiState, onSignIn: (AuthProvi
             Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                 TrustItem(Icons.Rounded.Lock, "Encrypted")
                 TrustItem(Icons.Rounded.CreditCard, "Stripe payments")
-                TrustItem(Icons.Rounded.VerifiedUser, "No passwords")
+                TrustItem(Icons.Rounded.VerifiedUser, "You're in control")
             }
             Spacer(Modifier.height(14.dp))
             Text(
@@ -328,6 +429,73 @@ private fun AuthSheet(role: AppRole, state: SessionUiState, onSignIn: (AuthProvi
             )
         }
     }
+}
+
+@Composable
+private fun AuthModeButton(label: String, isSelected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(11.dp)
+    Box(
+        modifier
+            .clip(shape)
+            .background(if (isSelected) RideColors.SurfaceRaised else Color.Transparent)
+            .clickable(role = Role.Tab, onClick = onClick)
+            .padding(vertical = 9.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.titleSmall,
+            color = if (isSelected) RideColors.TextPrimary else RideColors.TextSecondary,
+        )
+    }
+}
+
+@Composable
+private fun AuthField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    icon: ImageVector,
+    keyboardOptions: KeyboardOptions,
+    isPassword: Boolean = false,
+    showsPassword: Boolean = false,
+    onToggleVisibility: (() -> Unit)? = null,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        leadingIcon = { Icon(icon, null, tint = RideColors.TextSecondary, modifier = Modifier.size(19.dp)) },
+        trailingIcon = {
+            if (isPassword) {
+                val shown = showsPassword
+                IconButton(onClick = { onToggleVisibility?.invoke() }) {
+                    Icon(
+                        if (shown) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                        if (shown) "Hide password" else "Show password",
+                        tint = RideColors.TextSecondary,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
+        },
+        singleLine = true,
+        keyboardOptions = keyboardOptions,
+        visualTransformation = if (isPassword && !showsPassword) PasswordVisualTransformation() else VisualTransformation.None,
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier.fillMaxWidth(),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedContainerColor = RideColors.Surface,
+            unfocusedContainerColor = RideColors.Surface,
+            focusedTextColor = RideColors.TextPrimary,
+            unfocusedTextColor = RideColors.TextPrimary,
+            focusedBorderColor = RideColors.Accent,
+            unfocusedBorderColor = RideColors.Hairline,
+            focusedLabelColor = RideColors.Accent,
+            unfocusedLabelColor = RideColors.TextSecondary,
+            cursorColor = RideColors.Accent,
+        ),
+    )
 }
 
 @Composable
